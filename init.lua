@@ -211,15 +211,15 @@ end
 local HUD_WIDTH = 190
 local HUD_HEIGHT = 54
 local HUD_MARGIN = 14
-local hud = nil
+local huds = {}
 local hudHideTimer = nil
+local hudScreenWatcher = nil
 
-local function ensureHud()
-    if hud then return hud end
-    local screen = hs.screen.mainScreen():frame()
-    local x = screen.x + screen.w - HUD_WIDTH - HUD_MARGIN
-    local y = screen.y + HUD_MARGIN
-    hud = hs.canvas.new({ x = x, y = y, w = HUD_WIDTH, h = HUD_HEIGHT })
+local function makeHud(screen)
+    local frame = screen:frame()
+    local x = frame.x + frame.w - HUD_WIDTH - HUD_MARGIN
+    local y = frame.y + HUD_MARGIN
+    local hud = hs.canvas.new({ x = x, y = y, w = HUD_WIDTH, h = HUD_HEIGHT })
     hud:level(hs.canvas.windowLevels.overlay)
     hud:behavior(hs.canvas.windowBehaviors.canJoinAllSpaces)
     hud:appendElements({
@@ -256,17 +256,40 @@ local function ensureHud()
     return hud
 end
 
+-- Rebuilds the per-screen HUD windows to match the current screen set/layout.
+local function ensureHuds()
+    for _, hud in ipairs(huds) do
+        hud:delete()
+    end
+    huds = {}
+    for _, screen in ipairs(hs.screen.allScreens()) do
+        table.insert(huds, makeHud(screen))
+    end
+    return huds
+end
+
+if not hudScreenWatcher then
+    hudScreenWatcher = hs.screen.watcher.new(function()
+        if #huds > 0 then ensureHuds() end
+    end)
+    hudScreenWatcher:start()
+end
+
 -- fraction is 0..1 (nil hides the level bar entirely, e.g. for mute)
 local function showHud(label, fraction)
-    local c = ensureHud()
-    c["label"].text = label
+    if #huds == 0 then ensureHuds() end
     local trackWidth = HUD_WIDTH - 28
     local barWidth = fraction and (trackWidth * clamp(fraction, 0, 1)) or 0
-    c["fill"].frame = { x = 14, y = 34, w = barWidth, h = 5 }
-    c["track"].fillColor = { white = 1, alpha = fraction and 0.25 or 0.12 }
-    c:show()
+    for _, c in ipairs(huds) do
+        c["label"].text = label
+        c["fill"].frame = { x = 14, y = 34, w = barWidth, h = 5 }
+        c["track"].fillColor = { white = 1, alpha = fraction and 0.25 or 0.12 }
+        c:show()
+    end
     if hudHideTimer then hudHideTimer:stop() end
-    hudHideTimer = hs.timer.doAfter(1.1, function() c:hide() end)
+    hudHideTimer = hs.timer.doAfter(1.1, function()
+        for _, c in ipairs(huds) do c:hide() end
+    end)
 end
 
 local function volumeFraction(db)
