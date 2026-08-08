@@ -321,23 +321,47 @@ function adi2.toggleMute()
     end
 end
 
+-- Re-checks for the ADI-2 DAC's MIDI port on every USB connect/disconnect,
+-- so media keys fall back to native macOS volume control when the DAC isn't
+-- present and are captured again once it reappears. MIDI port enumeration
+-- can lag slightly behind the raw USB attach event, hence the short delay.
+function adi2.handleUSBEvent(usbEvent)
+    hs.timer.doAfter(0.5, function()
+        local wasConnected = adi2.state.port ~= nil
+        adi2.state.port = adi2.findPort()
+        local isConnected = adi2.state.port ~= nil
+
+        if isConnected and not wasConnected then
+            log("usb event: ADI-2 DAC connected, port " .. adi2.state.port)
+            adi2.syncFromDevice()
+            showHud(string.format("ADI-2 ready  %.1f dB", adi2.state.volumeDb), volumeFraction(adi2.state.volumeDb))
+        elseif wasConnected and not isConnected then
+            log("usb event: ADI-2 DAC disconnected, native volume controls active")
+            showHud("ADI-2 disconnected", nil)
+        end
+    end)
+end
+
 function adi2.start()
     log("start(): looking for ADI-2 DAC port")
     adi2.state.port = adi2.findPort()
-    if not adi2.state.port then
-        hs.alert.show("ADI-2 DAC MIDI port not found")
-        log("start(): port not found")
-        return
-    end
-    log("start(): found port " .. adi2.state.port)
     adi2.loadPersistedState()
-    log(string.format("start(): loaded persisted volumeDb=%.1f muted=%s", adi2.state.volumeDb, tostring(adi2.state.muted)))
-    showHud(string.format("ADI-2 ready  %.1f dB", adi2.state.volumeDb), volumeFraction(adi2.state.volumeDb))
-    adi2.syncFromDevice()
+    if adi2.state.port then
+        log("start(): found port " .. adi2.state.port)
+        log(string.format("start(): loaded persisted volumeDb=%.1f muted=%s", adi2.state.volumeDb, tostring(adi2.state.muted)))
+        showHud(string.format("ADI-2 ready  %.1f dB", adi2.state.volumeDb), volumeFraction(adi2.state.volumeDb))
+        adi2.syncFromDevice()
+    else
+        log("start(): port not found; native volume controls active until it connects")
+    end
+
+    adi2.usbWatcher = hs.usb.watcher.new(adi2.handleUSBEvent)
+    adi2.usbWatcher:start()
 
     adi2.eventtap = hs.eventtap.new({ hs.eventtap.event.types.systemDefined }, function(event)
         local nsEvent = event:systemKey()
         if not nsEvent or not nsEvent.down then return false end
+        if not adi2.state.port then return false end
         if nsEvent.key == "SOUND_UP" then
             adi2.volumeUp()
             return true
