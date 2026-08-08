@@ -296,18 +296,23 @@ local function volumeFraction(db)
     return (db - adi2.minDb) / (adi2.maxDb - adi2.minDb)
 end
 
-function adi2.volumeUp()
-    adi2.state.volumeDb = clamp(adi2.state.volumeDb + adi2.stepDb, adi2.minDb, adi2.maxDb)
+local function showVolumeHud(label, db)
+    showHud(string.format("%s  %.1f dB", label, db), volumeFraction(db))
+end
+
+local function adjustVolume(deltaDb)
+    adi2.state.volumeDb = clamp(adi2.state.volumeDb + deltaDb, adi2.minDb, adi2.maxDb)
     adi2.sendVolume(adi2.state.volumeDb)
     adi2.savePersistedState()
-    showHud(string.format("ADI-2 Line  %.1f dB", adi2.state.volumeDb), volumeFraction(adi2.state.volumeDb))
+    showVolumeHud("ADI-2 Line", adi2.state.volumeDb)
+end
+
+function adi2.volumeUp()
+    adjustVolume(adi2.stepDb)
 end
 
 function adi2.volumeDown()
-    adi2.state.volumeDb = clamp(adi2.state.volumeDb - adi2.stepDb, adi2.minDb, adi2.maxDb)
-    adi2.sendVolume(adi2.state.volumeDb)
-    adi2.savePersistedState()
-    showHud(string.format("ADI-2 Line  %.1f dB", adi2.state.volumeDb), volumeFraction(adi2.state.volumeDb))
+    adjustVolume(-adi2.stepDb)
 end
 
 function adi2.toggleMute()
@@ -317,7 +322,7 @@ function adi2.toggleMute()
     if adi2.state.muted then
         showHud("ADI-2 Line  Muted", nil)
     else
-        showHud(string.format("ADI-2 Line  %.1f dB", adi2.state.volumeDb), volumeFraction(adi2.state.volumeDb))
+        showVolumeHud("ADI-2 Line", adi2.state.volumeDb)
     end
 end
 
@@ -334,7 +339,7 @@ function adi2.handleUSBEvent(usbEvent)
         if isConnected and not wasConnected then
             log("usb event: ADI-2 DAC connected, port " .. adi2.state.port)
             adi2.syncFromDevice()
-            showHud(string.format("ADI-2 ready  %.1f dB", adi2.state.volumeDb), volumeFraction(adi2.state.volumeDb))
+            showVolumeHud("ADI-2 ready", adi2.state.volumeDb)
         elseif wasConnected and not isConnected then
             log("usb event: ADI-2 DAC disconnected, native volume controls active")
             showHud("ADI-2 disconnected", nil)
@@ -349,7 +354,7 @@ function adi2.start()
     if adi2.state.port then
         log("start(): found port " .. adi2.state.port)
         log(string.format("start(): loaded persisted volumeDb=%.1f muted=%s", adi2.state.volumeDb, tostring(adi2.state.muted)))
-        showHud(string.format("ADI-2 ready  %.1f dB", adi2.state.volumeDb), volumeFraction(adi2.state.volumeDb))
+        showVolumeHud("ADI-2 ready", adi2.state.volumeDb)
         adi2.syncFromDevice()
     else
         log("start(): port not found; native volume controls active until it connects")
