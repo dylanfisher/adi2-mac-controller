@@ -1,6 +1,6 @@
 # adi2-mac-controller
 
-Control an RME ADI-2 DAC's Line-out volume with your Mac's keyboard media keys (volume up/down/mute), by talking to the DAC directly over MIDI SysEx instead of macOS's own system volume. macOS's system volume is left untouched — the media keys are captured and consumed before the OS handles them.
+Control an [RME ADI-2 DAC's](https://rme-audio.de/adi-2-dac.html) Line-out volume with your Mac's keyboard media keys (volume up/down/mute), by talking to the DAC directly over MIDI SysEx instead of macOS's own system volume. macOS's system volume is left untouched — the media keys are captured and consumed before the OS handles them.
 
 ## How it works
 
