@@ -19,6 +19,10 @@
 
 hs.autoLaunch(true)
 
+-- Enables the `hs` command-line tool (e.g. `hs -c 'adi2.refreshPort("manual")'`)
+-- for inspecting and reloading this config without using the menu bar.
+require("hs.ipc")
+
 local adi2 = {}
 
 local LOG_PATH = os.getenv("HOME") .. "/.hammerspoon/adi2.log"
@@ -326,25 +330,68 @@ function adi2.toggleMute()
     end
 end
 
--- Re-checks for the ADI-2 DAC's MIDI port on every USB connect/disconnect,
--- so media keys fall back to native macOS volume control when the DAC isn't
--- present and are captured again once it reappears. MIDI port enumeration
--- can lag slightly behind the raw USB attach event, hence the short delay.
-function adi2.handleUSBEvent(usbEvent)
-    hs.timer.doAfter(0.5, function()
-        local wasConnected = adi2.state.port ~= nil
-        adi2.state.port = adi2.findPort()
-        local isConnected = adi2.state.port ~= nil
+-- Re-checks for the ADI-2 DAC's MIDI port and reacts to any connect/disconnect
+-- transition, so media keys fall back to native macOS volume control when the
+-- DAC isn't present and are captured again once it reappears. Returns true if
+-- the port is currently present.
+function adi2.refreshPort(reason, quiet)
+    local wasConnected = adi2.state.port ~= nil
+    adi2.state.port = adi2.findPort()
+    local isConnected = adi2.state.port ~= nil
 
-        if isConnected and not wasConnected then
-            log("usb event: ADI-2 DAC connected, port " .. adi2.state.port)
-            adi2.syncFromDevice()
-            showVolumeHud("ADI-2 ready", adi2.state.volumeDb)
-        elseif wasConnected and not isConnected then
-            log("usb event: ADI-2 DAC disconnected, native volume controls active")
-            showHud("ADI-2 disconnected", nil)
+    if isConnected and not wasConnected then
+        log(reason .. ": ADI-2 DAC connected, port " .. adi2.state.port)
+        adi2.syncFromDevice()
+        if not quiet then showVolumeHud("ADI-2 ready", adi2.state.volumeDb) end
+    elseif wasConnected and not isConnected then
+        log(reason .. ": ADI-2 DAC disconnected, native volume controls active")
+        if not quiet then showHud("ADI-2 disconnected", nil) end
+    end
+    return isConnected
+end
+
+-- MIDI port enumeration can lag well behind the raw USB attach event (and
+-- lags much further behind a wake-from-sleep), so retry on a backoff instead
+-- of relying on a single fixed delay.
+local RETRY_DELAYS = { 0.5, 1, 2, 4, 8, 15 }
+
+function adi2.refreshPortWithRetries(reason, attempt)
+    attempt = attempt or 1
+    local delay = RETRY_DELAYS[attempt]
+    if not delay then return end
+    hs.timer.doAfter(delay, function()
+        if adi2.refreshPort(reason) then return end
+        adi2.refreshPortWithRetries(reason, attempt + 1)
+    end)
+end
+
+function adi2.handleUSBEvent(usbEvent)
+    adi2.refreshPortWithRetries("usb event")
+end
+
+-- The eventtap can be disabled by macOS (e.g. kCGEventTapDisabledByTimeout,
+-- or across a sleep/wake cycle) without any event telling us so. Restart it
+-- whenever we notice it stopped.
+function adi2.ensureEventtapEnabled()
+    if adi2.eventtap and not adi2.eventtap:isEnabled() then
+        log("eventtap was disabled, restarting it")
+        adi2.eventtap:start()
+    end
+end
+
+-- Safety net for the case that motivated all of the above: on sleep the DAC
+-- detaches and we clear the port, but the matching re-attach event on wake is
+-- unreliable -- sometimes it never reaches hs.usb.watcher at all. Poll only
+-- while we believe the DAC is absent, so there's no cost in the normal case.
+function adi2.startWatchdog()
+    if adi2.watchdog then adi2.watchdog:stop() end
+    adi2.watchdog = hs.timer.new(30, function()
+        adi2.ensureEventtapEnabled()
+        if not adi2.state.port then
+            adi2.refreshPort("watchdog")
         end
     end)
+    adi2.watchdog:start()
 end
 
 function adi2.start()
@@ -362,6 +409,21 @@ function adi2.start()
 
     adi2.usbWatcher = hs.usb.watcher.new(adi2.handleUSBEvent)
     adi2.usbWatcher:start()
+
+    -- Waking from sleep is the main way this config used to end up wedged:
+    -- the DAC's USB detach at sleep clears the port, and nothing reliably
+    -- tells us it came back. Re-probe (with retries) on every wake/unlock.
+    adi2.caffeinateWatcher = hs.caffeinate.watcher.new(function(event)
+        local e = hs.caffeinate.watcher
+        if event == e.systemDidWake
+            or event == e.screensDidUnlock
+            or event == e.sessionDidBecomeActive then
+            log("caffeinate event " .. tostring(event) .. ": re-probing for DAC")
+            adi2.ensureEventtapEnabled()
+            adi2.refreshPortWithRetries("wake")
+        end
+    end)
+    adi2.caffeinateWatcher:start()
 
     adi2.eventtap = hs.eventtap.new({ hs.eventtap.event.types.systemDefined }, function(event)
         local nsEvent = event:systemKey()
@@ -384,6 +446,8 @@ function adi2.start()
     if not hs.accessibilityState() then
         log("WARNING: Accessibility permission not granted, eventtap will not receive events")
     end
+
+    adi2.startWatchdog()
 end
 
 adi2.start()
